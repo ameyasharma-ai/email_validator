@@ -59,10 +59,11 @@ class SheetsClient:
         data = values[1:] # Skip headers
         return data, client_col_idx, email_col_idx
         
-    def highlight_invalid_emails(self, invalid_emails_map):
+    def process_invalid_emails(self, invalid_emails_map, action_map):
         """
-        invalid_emails_map: dict of { row_index: [list of invalid email strings] }
-        row_index is 0-indexed relative to the worksheet (0 is header, 1 is first data row).
+        invalid_emails_map: dict of { row_idx: [list of invalid email strings] }
+        action_map: dict of { row_idx: 'delete' | 'highlight' }
+        row_idx is 0-indexed relative to the worksheet (0 is header, 1 is first data row).
         """
         if not self.spreadsheet_name:
             return
@@ -91,46 +92,15 @@ class SheetsClient:
             if row_idx >= len(values):
                 continue
                 
+            action = action_map.get(row_idx, 'highlight')
             cell_value = values[row_idx][email_col_idx]
-            format_runs = []
             
-            parts = [p.strip() for p in cell_value.split(',')]
-            search_start = 0
-            
-            for part in parts:
-                if not part:
-                    continue
-                start_pos = cell_value.find(part, search_start)
-                if start_pos == -1:
-                    continue
-                    
-                end_pos = start_pos + len(part)
+            if action == 'delete':
+                # Remove the bad emails from the comma-separated string
+                parts = [p.strip() for p in cell_value.split(',')]
+                new_parts = [p for p in parts if p and p not in bad_emails]
+                new_value = ', '.join(new_parts)
                 
-                if part in bad_emails:
-                    format_runs.append({
-                        "startIndex": start_pos,
-                        "format": {
-                            "foregroundColorStyle": {
-                                "rgbColor": {"red": 1.0, "green": 0.0, "blue": 0.0}
-                            },
-                            "bold": True
-                        }
-                    })
-                    if end_pos < len(cell_value):
-                         format_runs.append({
-                             "startIndex": end_pos,
-                             "format": {}
-                         })
-                         
-                search_start = end_pos
-                
-            if format_runs:
-                if format_runs[0].get('startIndex', 0) != 0:
-                    format_runs.insert(0, {
-                        "startIndex": 0,
-                        "format": {}
-                    })
-                    
                 requests.append({
                     "updateCells": {
                         "range": {
@@ -144,8 +114,8 @@ class SheetsClient:
                             {
                                 "values": [
                                     {
-                                        "userEnteredValue": {"stringValue": cell_value},
-                                        "textFormatRuns": format_runs
+                                        "userEnteredValue": {"stringValue": new_value},
+                                        "textFormatRuns": [] # Clear rich text formatting
                                     }
                                 ]
                             }
@@ -153,9 +123,71 @@ class SheetsClient:
                         "fields": "userEnteredValue,textFormatRuns"
                     }
                 })
+            else:
+                # Highlight action
+                format_runs = []
+                parts = [p.strip() for p in cell_value.split(',')]
+                search_start = 0
+                
+                for part in parts:
+                    if not part:
+                        continue
+                    start_pos = cell_value.find(part, search_start)
+                    if start_pos == -1:
+                        continue
+                        
+                    end_pos = start_pos + len(part)
+                    
+                    if part in bad_emails:
+                        format_runs.append({
+                            "startIndex": start_pos,
+                            "format": {
+                                "foregroundColorStyle": {
+                                    "rgbColor": {"red": 1.0, "green": 0.0, "blue": 0.0}
+                                },
+                                "bold": True
+                            }
+                        })
+                        if end_pos < len(cell_value):
+                             format_runs.append({
+                                 "startIndex": end_pos,
+                                 "format": {}
+                             })
+                             
+                    search_start = end_pos
+                    
+                if format_runs:
+                    if format_runs[0].get('startIndex', 0) != 0:
+                        format_runs.insert(0, {
+                            "startIndex": 0,
+                            "format": {}
+                        })
+                        
+                    requests.append({
+                        "updateCells": {
+                            "range": {
+                                "sheetId": sheet_id,
+                                "startRowIndex": row_idx,
+                                "endRowIndex": row_idx + 1,
+                                "startColumnIndex": email_col_idx,
+                                "endColumnIndex": email_col_idx + 1
+                            },
+                            "rows": [
+                                {
+                                    "values": [
+                                        {
+                                            "userEnteredValue": {"stringValue": cell_value},
+                                            "textFormatRuns": format_runs
+                                        }
+                                    ]
+                                }
+                            ],
+                            "fields": "userEnteredValue,textFormatRuns"
+                        }
+                    })
                 
         if requests:
-            # Batch update the formatting
+            # Batch update the formatting and values
             body = {'requests': requests}
             self.service.spreadsheets().batchUpdate(
                 spreadsheetId=self.spreadsheet_id,
