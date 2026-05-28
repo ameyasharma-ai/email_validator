@@ -23,6 +23,10 @@ def process_emails_sync(invalid_emails_map, action_map):
     sheets = SheetsClient()
     sheets.process_invalid_emails(invalid_emails_map, action_map)
 
+def apply_corrections_sync(corrected_emails_map):
+    sheets = SheetsClient()
+    sheets.apply_corrections(corrected_emails_map)
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Hello! Send /email_validator to start validating CRM emails, or /commands to see all options.")
 
@@ -73,10 +77,8 @@ async def validate_emails_command(update: Update, context: ContextTypes.DEFAULT_
     
     async def check_single(row_idx, client_id, em):
         async with sem:
-            is_valid, reason = await asyncio.to_thread(check_email_validity, em, use_api)
-            if not is_valid:
-                return (row_idx, client_id, em, reason)
-            return None
+            is_valid, reason, corrected_email = await asyncio.to_thread(check_email_validity, em, use_api)
+            return (row_idx, client_id, em, is_valid, reason, corrected_email)
             
     tasks = [check_single(*item) for item in emails_to_check]
     results = await asyncio.gather(*tasks)
@@ -85,14 +87,30 @@ async def validate_emails_command(update: Update, context: ContextTypes.DEFAULT_
     row_to_client_id = {}
     report_lines = []
     
+    corrected_emails_map = {}
+    num_corrections = 0
+    
     for res in results:
         if res:
-            row_idx, client_id, em, reason = res
-            report_lines.append(f"Client ID: {client_id} | Email: {em} | Reason: {reason}")
-            if row_idx not in invalid_emails_map:
-                invalid_emails_map[row_idx] = []
-            invalid_emails_map[row_idx].append(em)
-            row_to_client_id[row_idx] = client_id
+            row_idx, client_id, em, is_valid, reason, corrected_email = res
+            
+            if corrected_email:
+                if row_idx not in corrected_emails_map:
+                    corrected_emails_map[row_idx] = {}
+                corrected_emails_map[row_idx][em] = corrected_email
+                num_corrections += 1
+                
+            if not is_valid:
+                final_email = corrected_email if corrected_email else em
+                report_lines.append(f"Client ID: {client_id} | Email: {final_email} | Reason: {reason}")
+                if row_idx not in invalid_emails_map:
+                    invalid_emails_map[row_idx] = []
+                invalid_emails_map[row_idx].append(final_email)
+                row_to_client_id[row_idx] = client_id
+                
+    if num_corrections > 0:
+        await update.message.reply_text(f"✨ Found and auto-corrected {num_corrections} typos! Updating Google Sheets now...")
+        await asyncio.to_thread(apply_corrections_sync, corrected_emails_map)
             
     if not report_lines:
         await update.message.reply_text("All emails in the CRM look healthy!")

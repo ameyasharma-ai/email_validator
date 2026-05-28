@@ -193,3 +193,72 @@ class SheetsClient:
                 spreadsheetId=self.spreadsheet_id,
                 body=body
             ).execute()
+
+    def apply_corrections(self, corrected_emails_map):
+        """
+        corrected_emails_map: dict of { row_idx: { old_email: new_email } }
+        """
+        if not self.spreadsheet_name or not corrected_emails_map:
+            return
+            
+        sh = self.gc.open(self.spreadsheet_name)
+        self.spreadsheet_id = sh.id
+        worksheet = sh.worksheet(self.worksheet_name)
+        sheet_id = worksheet.id
+        
+        values = worksheet.get_all_values()
+        if not values:
+            return
+            
+        headers = [h.strip().lower() for h in values[0]]
+        email_col_idx = -1
+        for i, h in enumerate(headers):
+            if 'email' in h:
+                email_col_idx = i
+                break
+                
+        if email_col_idx == -1:
+            return
+            
+        requests = []
+        for row_idx, corrections in corrected_emails_map.items():
+            if row_idx >= len(values):
+                continue
+                
+            cell_value = values[row_idx][email_col_idx]
+            new_value = cell_value
+            for old_em, new_em in corrections.items():
+                parts = [p.strip() for p in new_value.split(',')]
+                new_parts = [new_em if p == old_em else p for p in parts if p]
+                new_value = ', '.join(new_parts)
+                
+            if new_value != cell_value:
+                requests.append({
+                    "updateCells": {
+                        "range": {
+                            "sheetId": sheet_id,
+                            "startRowIndex": row_idx,
+                            "endRowIndex": row_idx + 1,
+                            "startColumnIndex": email_col_idx,
+                            "endColumnIndex": email_col_idx + 1
+                        },
+                        "rows": [
+                            {
+                                "values": [
+                                    {
+                                        "userEnteredValue": {"stringValue": new_value},
+                                        "textFormatRuns": [] # Strip formatting when correcting
+                                    }
+                                ]
+                            }
+                        ],
+                        "fields": "userEnteredValue,textFormatRuns"
+                    }
+                })
+                
+        if requests:
+            body = {'requests': requests}
+            self.service.spreadsheets().batchUpdate(
+                spreadsheetId=self.spreadsheet_id,
+                body=body
+            ).execute()
