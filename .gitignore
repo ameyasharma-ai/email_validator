@@ -5,10 +5,15 @@ env/
 
 # Environment Variables
 .env
+.env.*
 
 # Google Service Account Credentials
 # CRITICAL: Never commit this to GitHub!
 service_account.json
+*service_account*.json
+*credentials*.json
+*.key
+*.pem
 
 # Python Cache Files
 __pycache__/
